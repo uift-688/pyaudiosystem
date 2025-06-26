@@ -4,7 +4,7 @@ from enum import Enum
 from greenlet import greenlet
 from scipy.io.wavfile import read
 from scipy.signal import resample
-from typing import Callable, Optional, Self, List, Dict, Union, Coroutine
+from typing import Callable, Optional, Self, List, Dict, Union, Coroutine, NoReturn, Tuple
 from time import time
 from collections import defaultdict
 from uuid import uuid4
@@ -26,7 +26,7 @@ class Driver:
     def __init__(self, config: DriverConfig) -> None:
         self.audio = PyAudio()
         self.config = config
-        self.extensions = {}
+        self.extensions: Dict[str, ExtensionBase] = {}
         self.manager = AudioStreamManager(self)
     def get(self):
         return self.manager.audio_scheduler.loop, self.manager.audio_scheduler
@@ -38,9 +38,10 @@ class AudioStreamManager:
         self.stream = driver.audio.open(self.driver.config.rate, 2, self.driver.config.format.value[0], output=True) if not is_test_mode else None
         self.audio_scheduler = AudioScheduler(self)
     def close(self):
-        self.stream.stop_stream()
-        self.stream.close()
-        self.driver.audio.terminate()
+        if not is_test_mode and self.stream is not None:
+            self.stream.stop_stream()
+            self.stream.close()
+            self.driver.audio.terminate()
 
 class AudioScheduler:
     """音声をスケジュールするクラス"""
@@ -48,7 +49,7 @@ class AudioScheduler:
         self.stream = stream
         self.chunks: List[Dict[str, List[np.ndarray]]] = [{} for _ in range(50)]
         self.chunkId = 0
-        self.tps = -1
+        self.tps: int = -1
         self.loop = EventLoopScheduler(stream, self)
     def set_tps(self, tps: int):
         """for _ in loopのtpsを設定する。-1で無制限"""
@@ -66,7 +67,6 @@ class AudioScheduler:
             data = self.stream.driver.extensions["SoundsManager"].sounds[original_data]
         else:
             data = original_data
-        data: np.ndarray
 
         total_length = len(data)
         num_chunks_needed = (total_length + chunk_size - 1) // chunk_size
@@ -209,7 +209,7 @@ class EventLoopScheduler:
                 self.scheduler.stream.close()
         self.tick = tick
         return func
-    def execute(self):
+    def execute(self) -> Union[None, NoReturn]:
         """タスクを起動"""
         def main():
             try:
@@ -232,7 +232,7 @@ class EventLoopScheduler:
         self.tick_sync_condition.clear()
         if self.is_stopping:
             raise StopAsyncIteration
-    def stop(self):
+    def stop(self) -> None:
         self.is_stopping = True
         self.player_thread.throw(PlayerStop)
     def __next__(self) -> None:
@@ -251,10 +251,10 @@ class EventLoopScheduler:
         self.tick_count += 1
         if self.scheduler.tps != -1:
             self.last_time = time()
-    def get_volume(self):
+    def get_volume(self) -> float:
         volume = np.mean(np.abs(self.now_playing_audio.mean(axis=1)))
         return volume
-    def execute_to_tick(self, ticks: int):
+    def execute_to_tick(self, ticks: int) -> Callable[[Callable[[], Coroutine]], Callable[[], Coroutine]]:
         def Wrapper(func: Callable[[], Coroutine]):
             if ticks in self.tick_callbacks:
                 self.tick_callbacks[ticks + self.tick_count].append(func)
@@ -274,7 +274,7 @@ class SoundsManager(ExtensionBase):
         super().__init__(driver)
         self.driver = driver
         self.sounds = {}
-    def add(self, filename: Union[str, np.ndarray], sound_as: str, rate: int = None):
+    def add(self, filename: Union[str, np.ndarray], sound_as: str, rate: Optional[int] = None) -> None:
         """音の追加
         例: `sound_manager.add("audio.wav", "audio")`"""
         if isinstance(filename, np.ndarray):
@@ -293,7 +293,7 @@ class SoundsManager(ExtensionBase):
             data *= scaling
             data = data.astype(self.driver.config.format.value[1])
         self.sounds[sound_as] = data
-    def __getitem__(self, name: str):
+    def __getitem__(self, name: str) -> "_SoundData":
         """保存された音を取得"""
         return _SoundData(self, name)
 
@@ -346,7 +346,7 @@ class AudioMap(ExtensionBase):
         self.rate = self.driver.config.rate
         self.size = slice(0, size)
         self.data: Dict[str, np.ndarray] = {}
-    def write(self, audio: Union[np.ndarray, _SoundData, str], start: float, end: Optional[float] = None):
+    def write(self, audio: Union[np.ndarray, _SoundData, str], start: float, end: Optional[float] = None) -> _AudioWriteHandlerForAudioMap:
         """仮想オーディオマップに書き込む
         start/end: サンプル数"""
         end = end if end is not None else self.size.stop
@@ -361,10 +361,10 @@ class AudioMap(ExtensionBase):
         id = uuid4().hex
         self.data[id] = buffer
         return _AudioWriteHandlerForAudioMap(self, id)
-    def mix(self):
+    def mix(self) -> np.ndarray:
         return np.sum(list(self.data.values()), axis=0)
 
-def build_system(rate: int, format: AudioFormat = AudioFormat.int16):
+def build_system(rate: int, format: AudioFormat = AudioFormat.int16) -> Tuple[Driver, EventLoopScheduler, AudioScheduler, SoundsManager]:
     config = DriverConfig(format, rate, 400)
     driver = Driver(config)
     loop, scheduler = driver.get()
