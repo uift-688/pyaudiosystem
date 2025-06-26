@@ -35,7 +35,7 @@ class AudioStreamManager:
     """音声ストリームを管理するクラス"""
     def __init__(self, driver: Driver):
         self.driver = driver
-        self.stream = driver.audio.open(self.driver.config.rate, 2, self.driver.config.format.value[0], output=True) if not is_test_mode else None
+        self.stream = driver.audio.open(self.driver.config.rate, 2, self.driver.config.format.value[0], output=True)
         self.audio_scheduler = AudioScheduler(self)
     def close(self):
         self.stream.stop_stream()
@@ -159,8 +159,6 @@ class EventLoopScheduler:
     def _audioPlayer(self):
         try:
             while True:
-                if is_test_mode:
-                    break
                 array = self.scheduler.chunks[self.scheduler.chunkId % len(self.scheduler.chunks)]
                 if len(array) != 0:
                     sum_data = np.sum([data.pop(0) for data in array.values() if len(data) > 0], axis=0, dtype=np.int64) / len(array)
@@ -339,16 +337,34 @@ def build_system(rate: int, format: AudioFormat = AudioFormat.int16):
     sounds_manager = SoundsManager(driver)
     return driver, loop, scheduler, sounds_manager
 
-class AudioPipeline:
-    def __init__(self, *pipelines: Callable[[np.ndarray], np.ndarray]):
+class AudioPipeline(ExtensionBase):
+    def __init__(self, driver: Driver, *pipelines: Callable[[np.ndarray], np.ndarray]):
+        super().__init__(driver)
         self.pipelines = pipelines
-    def execute(self, audio: np.ndarray):
+        self.driver = driver
+    def execute(self, audio: Union[np.ndarray, str, _SoundData]):
+        data = audio.get() if isinstance(audio, _SoundData) else audio if isinstance(audio, np.ndarray) else self.driver.extensions["SoundsManager"].sounds[audio] if isinstance(audio, str)
         for pipe in self.pipelines:
-            audio = pipe(audio)
-        return audio
+            data = pipe(data)
+        return data
 
-is_test_mode = False
+# 4. ドライバ準備
+driver, loop, scheduler, sound = build_system(44100)
+sound.add("audio.wav", "main")
 
-def set_test_mode():
-    global is_test_mode
-    is_test_mode = True
+# 6. タスク定義（ループを何回進めるか決める）
+@loop.task
+async def task():
+    audio = await scheduler.play_soon("main")
+    scheduler.set_tps(20)
+    @loop.execute_to_tick(240)
+    async def func():
+        audio.cancel()
+        @loop.execute_to_tick(240)
+        async def func():
+            loop.stop()
+    async for _ in loop:
+        pass
+
+# 7. 実行
+loop.execute()
