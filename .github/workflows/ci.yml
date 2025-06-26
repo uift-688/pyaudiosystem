@@ -21,6 +21,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
@@ -33,6 +40,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           sudo pip install pyaudio==0.2.14 numpy==1.26.4 scipy==1.13.1 pytest greenlet
+          
       - name: Run tests
         run: |
           pytest test_main.py
