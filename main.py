@@ -148,6 +148,7 @@ class AsyncConnectedEventLoop(asyncio.SelectorEventLoop):
         super().__init__()
         self.driver = driver
         self.end_flag = False
+        self.task: Optional[asyncio.Task] = None
     def _run_once(self):
         try:
             next(self.driver.manager.audio_scheduler.loop)
@@ -156,7 +157,16 @@ class AsyncConnectedEventLoop(asyncio.SelectorEventLoop):
             self.stop()
             return
         super()._run_once()
+    def stop(self):
+        self.task.cancel()
+        super().stop()
     def run_until_complete(self, future):
+        def call_task():
+            async def task():
+                while True:
+                    await asyncio.sleep(self.driver.config.chunk / self.driver.config.rate)
+            self.task = self.create_task(task())
+        self.call_soon(call_task)
         iter(self.driver.manager.audio_scheduler.loop)
         return super().run_until_complete(future)
 
