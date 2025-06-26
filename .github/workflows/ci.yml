@@ -27,12 +27,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install PortAudio
         run: |
-          apt update
-          apt install -y portaudio19-dev
+          sudo apt update
+          sudo apt install -y portaudio19-dev
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyaudio==0.2.14 numpy==1.26.4 scipy==1.13.1 pytest greenlet
+          sudo pip install pyaudio==0.2.14 numpy==1.26.4 scipy==1.13.1 pytest greenlet
       - name: Run tests
         run: |
           pytest test_main.py
