@@ -345,7 +345,7 @@ class AudioPipeline(ExtensionBase):
         self.pipelines = pipelines
         self.driver = driver
     def execute(self, audio: Union[np.ndarray, str, _SoundData]):
-        data = audio.get() if isinstance(audio, _SoundData) else audio if isinstance(audio, np.ndarray) else self.driver.extensions["SoundsManager"].sounds[audio] if isinstance(audio, str)
+        data = audio.get() if isinstance(audio, _SoundData) else audio if isinstance(audio, np.ndarray) else self.driver.extensions["SoundsManager"].sounds[audio] if isinstance(audio, str) else None
         for pipe in self.pipelines:
             data = pipe(data)
         return data
