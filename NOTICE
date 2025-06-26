@@ -1,0 +1,9 @@
+This project includes third-party software:
+
+- NumPy (BSD 3-Clause) - https://numpy.org
+- SciPy (BSD 3-Clause) - https://scipy.org
+- PyAudio (MIT) - https://people.csail.mit.edu/hubert/pyaudio/
+- greenlet (MIT) - https://greenlet.readthedocs.io/
+- Python (PSF License) - https://www.python.org/
+
+All respective licenses and copyrights are retained by their owners.
