@@ -4,7 +4,7 @@ from enum import Enum
 from greenlet import greenlet
 from scipy.io.wavfile import read
 from scipy.signal import resample
-from typing import Callable, Optional, Self, List, Dict, Union, Awaitable
+from typing import Callable, Optional, Self, List, Dict, Union, Coroutine
 from time import time
 from collections import defaultdict
 from uuid import uuid4
@@ -53,7 +53,7 @@ class AudioScheduler:
     def set_tps(self, tps: int):
         """for _ in loopのtpsを設定する。-1で無制限"""
         self.tps = tps
-    async def _write(self, start_index: int, original_data: Union[np.ndarray, "_SoundData"], chunk_size: int = 100):
+    async def _write(self, start_index: int, original_data: Union[np.ndarray, "_SoundData", str], chunk_size: int = 100):
         """
         chunks     : チャンクのリスト（各要素はchunk_sizeのNumPy配列）
         start_index: 配列全体を連続と見なしたときの開始インデックス
@@ -62,6 +62,8 @@ class AudioScheduler:
         """
         if isinstance(original_data, _SoundData):
             data = original_data.get()
+        elif isinstance(original_data, str):
+            data = self.stream.driver.extensions["SoundsManager"].sounds[original_data]
         else:
             data = original_data
         data: np.ndarray
@@ -86,7 +88,6 @@ class AudioScheduler:
         chunks = self.chunks
         write_positions = np.arange(num_chunks_needed) + (start_index // chunk_size)
         write_chunk_ids = (write_positions + self.chunkId + 1) % len(chunks)
-
         # すべてのチャンクへまとめて登録（非同期性を壊さず）
         batch_buffers = defaultdict(list)  # IDごとにまとめる
         # 1チャンク単位でIDごとにまとめて登録
@@ -102,7 +103,7 @@ class AudioScheduler:
             if id_key not in current_chunk:
                 current_chunk[id_key] = []
             current_chunk[id_key].extend(buffers)
-        return AudioWriteHandler(self, range(write_chunk_ids[0], write_chunk_ids[-1] + 1), id)
+        return AudioWriteHandler(self, range(write_chunk_ids[0], write_chunk_ids[-1] + 1), id, data)
     async def play_later(self, seconds: float, data: Union[np.ndarray, "_SoundData", str]):
         """秒数経過後に再生する"""
         data = data if isinstance(data, _SoundData) else data if isinstance(data, np.ndarray) else _SoundData(self.stream.driver.extensions["SoundsManager"], data)
@@ -114,8 +115,17 @@ class AudioScheduler:
 
 class AudioWriteHandler:
     """書き込んだ音声をキャンセルできる制御クラス"""
-    def __init__(self, scheduler: AudioScheduler, written: range, id: str):
+    def __init__(self, scheduler: AudioScheduler, written: range, id: str, data: np.ndarray):
         self.id, self.written, self.scheduler = id, written, scheduler
+        self.callback_function: Optional[Callable[[], Coroutine]] = None
+        self.data = data
+        self.scheduler.loop.loop.call_later(len(self.data) / self.scheduler.stream.driver.config.rate, self._callback_runner)
+    def _callback_runner(self):
+        if self.callback_function is not None:
+            self.scheduler.loop.loop.create_task(self.callback_function())
+    def callback(self, func: Callable[[], Coroutine]):
+        self.callback_function = func
+        return func
     def cancel(self):
         """書き込んだ音声をキャンセルする。"""
         for i in self.written:
@@ -144,7 +154,7 @@ class AsyncConnectedEventLoop(asyncio.SelectorEventLoop):
 class EventLoopScheduler:
     """音を再生するループ"""
     def __init__(self, stream: AudioStreamManager, scheduler: AudioScheduler):
-        self.tick: Optional[Callable[[], Awaitable]] = None
+        self.tick: Optional[Callable[[], Coroutine]] = None
         self.player_thread: Optional[greenlet] = None
         self.tick_thread: Optional[greenlet] = None
         self.stream = stream
@@ -155,7 +165,7 @@ class EventLoopScheduler:
         self.tick_count = 0
         self.now_playing_audio = np.zeros((self.stream.driver.config.chunk, 2))
         self.loop = AsyncConnectedEventLoop(self.scheduler.stream.driver)
-        self.tick_callbacks: Dict[int, List[Callable[[], Awaitable]]] = {}
+        self.tick_callbacks: Dict[int, List[Callable[[], Coroutine]]] = {}
     def _audioPlayer(self):
         try:
             while True:
@@ -171,7 +181,7 @@ class EventLoopScheduler:
                 self.tick_thread.switch()
         except PlayerStop:
             return
-    def task(self, func: Callable[[], Awaitable]) -> Callable[[], Awaitable]:
+    def task(self, func: Callable[[], Coroutine]) -> Callable[[], Coroutine]:
         """loop.execute()時に実行する関数を指定するデコレーター"""
         async def tick():
             try:
@@ -226,7 +236,7 @@ class EventLoopScheduler:
         volume = np.mean(np.abs(self.now_playing_audio.mean(axis=1)))
         return volume
     def execute_to_tick(self, ticks: int):
-        def Wrapper(func: Callable[[], Awaitable]):
+        def Wrapper(func: Callable[[], Coroutine]):
             if ticks in self.tick_callbacks:
                 self.tick_callbacks[ticks + self.tick_count].append(func)
             else:
