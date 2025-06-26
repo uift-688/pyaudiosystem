@@ -119,15 +119,19 @@ class AudioWriteHandler:
         self.id, self.written, self.scheduler = id, written, scheduler
         self.callback_function: Optional[Callable[[], Coroutine]] = None
         self.data = data
-        self.scheduler.loop.loop.call_later(len(self.data) / self.scheduler.stream.driver.config.rate, self._callback_runner)
+        self.is_played = False
+        self.callback_caller = self.scheduler.loop.loop.call_later(len(self.data) / self.scheduler.stream.driver.config.rate, self._callback_runner)
     def _callback_runner(self):
         if self.callback_function is not None:
             self.scheduler.loop.loop.create_task(self.callback_function())
+        self.is_played = True
     def callback(self, func: Callable[[], Coroutine]):
         self.callback_function = func
         return func
     def cancel(self):
         """書き込んだ音声をキャンセルする。"""
+        if not self.is_played:
+            self.callback_caller.cancel()
         for i in self.written:
             self.scheduler.chunks[i].pop(self.id, None)
 
