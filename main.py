@@ -35,7 +35,7 @@ class AudioStreamManager:
     """音声ストリームを管理するクラス"""
     def __init__(self, driver: Driver):
         self.driver = driver
-        self.stream = driver.audio.open(self.driver.config.rate, 2, self.driver.config.format.value[0], output=True)
+        self.stream = driver.audio.open(self.driver.config.rate, 2, self.driver.config.format.value[0], output=True) if not is_test_mode else None
         self.audio_scheduler = AudioScheduler(self)
     def close(self):
         self.stream.stop_stream()
@@ -159,6 +159,8 @@ class EventLoopScheduler:
     def _audioPlayer(self):
         try:
             while True:
+                if is_test_mode:
+                    break
                 array = self.scheduler.chunks[self.scheduler.chunkId % len(self.scheduler.chunks)]
                 if len(array) != 0:
                     sum_data = np.sum([data.pop(0) for data in array.values() if len(data) > 0], axis=0, dtype=np.int64) / len(array)
@@ -348,23 +350,8 @@ class AudioPipeline(ExtensionBase):
             data = pipe(data)
         return data
 
-# 4. ドライバ準備
-driver, loop, scheduler, sound = build_system(44100)
-sound.add("audio.wav", "main")
+is_test_mode = False
 
-# 6. タスク定義（ループを何回進めるか決める）
-@loop.task
-async def task():
-    audio = await scheduler.play_soon("main")
-    scheduler.set_tps(20)
-    @loop.execute_to_tick(240)
-    async def func():
-        audio.cancel()
-        @loop.execute_to_tick(240)
-        async def func():
-            loop.stop()
-    async for _ in loop:
-        pass
-
-# 7. 実行
-loop.execute()
+def set_test_mode():
+    global is_test_mode
+    is_test_mode = True
