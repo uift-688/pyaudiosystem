@@ -68,11 +68,3 @@ It includes the following third-party libraries with their respective licenses:
 * Python standard library (PSF License)
 
 Please refer to their respective licenses for details.
-
-## Disclaimer
-
-This project, **python-audiosystem**, is an independent, community-driven project and **is not affiliated, endorsed, or officially connected with the Python Software Foundation or the Python programming language team**.
-
-The use of the word "python" in the project name is solely to indicate that it is developed using the Python programming language, and does not imply any official relationship.
-
-Please use this software at your own discretion.
