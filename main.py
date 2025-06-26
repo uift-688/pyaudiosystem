@@ -35,7 +35,7 @@ class AudioStreamManager:
     """音声ストリームを管理するクラス"""
     def __init__(self, driver: Driver):
         self.driver = driver
-        self.stream = driver.audio.open(self.driver.config.rate, 2, self.driver.config.format.value[0], output=True)
+        self.stream = driver.audio.open(self.driver.config.rate, 2, self.driver.config.format.value[0], output=True) if not is_test_mode else None
         self.audio_scheduler = AudioScheduler(self)
     def close(self):
         self.stream.stop_stream()
@@ -159,6 +159,8 @@ class EventLoopScheduler:
     def _audioPlayer(self):
         try:
             while True:
+                if is_test_mode:
+                    break
                 array = self.scheduler.chunks[self.scheduler.chunkId % len(self.scheduler.chunks)]
                 if len(array) != 0:
                     sum_data = np.sum([data.pop(0) for data in array.values() if len(data) > 0], axis=0, dtype=np.int64) / len(array)
@@ -344,3 +346,9 @@ class AudioPipeline:
         for pipe in self.pipelines:
             audio = pipe(audio)
         return audio
+
+is_test_mode = False
+
+def set_test_mode():
+    global is_test_mode
+    is_test_mode = True
