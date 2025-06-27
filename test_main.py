@@ -1,5 +1,7 @@
-from main import build_system, AudioMap, set_test_mode, AudioPipeline, AudioEffecter, ExtensionBase
-from numpy import linspace, sin, cos, int16, arange
+from main import build_system, AudioMap, set_test_mode, AudioPipeline, AudioEffecter, ExtensionBase, PlayerStop
+from numpy import sin, cos, arange
+from pytest import raises
+from time import perf_counter
 
 set_test_mode()
 
@@ -59,3 +61,42 @@ def test_extension_base():
     ExtensionBase(driver)
 
     assert "ExtensionBase" in driver.extensions
+
+def test_errors_write_monaural():
+    driver, loop, scheduler, sound = build_system(40000)
+
+    audio1 = arange(0, driver.config.rate * 4)
+
+    a = sin(audio1)
+
+    @loop.task
+    async def task():
+        with raises(ValueError):
+            await scheduler.play_soon(a)
+        with raises(PlayerStop):
+            loop.stop()
+
+def test_tps():
+    driver, loop, scheduler, sound = build_system(40000)
+
+    intervals = []
+    timestamps = []
+
+    @loop.task
+    async def task():
+        scheduler.set_tps(20)
+        async for _ in loop:
+            if len(timestamps) >= 400:
+                return
+            timestamps.append(perf_counter())
+    with raises(PlayerStop):
+        loop.execute()
+
+    for i in range(1, len(timestamps)):
+        intervals.append(timestamps[i] - timestamps[i - 1])
+
+    expected = 0.05
+    tolerance = 0.05
+    
+    for i, interval in enumerate(intervals):
+        assert abs(interval - expected) < tolerance, f"{i}番目の間隔が不正: {interval:.4f}秒"
