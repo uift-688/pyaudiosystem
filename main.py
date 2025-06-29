@@ -4,8 +4,9 @@ from enum import Enum
 from greenlet import greenlet
 from scipy.io.wavfile import read
 from scipy.signal import resample
-from typing import Callable, Optional, Self, List, Dict, Union, Coroutine, NoReturn, Tuple
+from typing import Callable, Optional, Self, List, Dict, Union, Coroutine, NoReturn, Tuple, Type, Any, ParamSpec
 from time import time
+from functools import lru_cache
 from collections import defaultdict
 from uuid import uuid4
 import asyncio
@@ -154,11 +155,9 @@ class AsyncConnectedEventLoop(asyncio.SelectorEventLoop):
             next(self.driver.manager.audio_scheduler.loop)
         except StopIteration:
             self.end_flag = True
-            self.stop()
             return
         super()._run_once()
     def stop(self):
-        self.task.cancel()
         super().stop()
     def run_until_complete(self, future):
         def call_task():
@@ -169,6 +168,7 @@ class AsyncConnectedEventLoop(asyncio.SelectorEventLoop):
         self.call_soon(call_task)
         iter(self.driver.manager.audio_scheduler.loop)
         return super().run_until_complete(future)
+    def __del__(self): pass
 
 class EventLoopScheduler:
     """音を再生するループ"""
@@ -185,6 +185,7 @@ class EventLoopScheduler:
         self.now_playing_audio = np.zeros((self.stream.driver.config.chunk, 2))
         self.loop = AsyncConnectedEventLoop(self.scheduler.stream.driver)
         self.tick_callbacks: Dict[int, List[Callable[[], Coroutine]]] = {}
+        self.is_called_stop = False
     def _audioPlayer(self):
         try:
             while True:
@@ -196,6 +197,9 @@ class EventLoopScheduler:
                     data = sum_data.astype(self.stream.driver.config.format.value[1])
                     self.now_playing_audio = data
                     self.stream.stream.write(data.tobytes())
+                    for key, data in array.items():
+                        if not data:
+                            del array[key]
                     self.scheduler.chunkId = (self.scheduler.chunkId + 1) % len(self.scheduler.chunks)
                 self.tick_thread.switch()
         except PlayerStop:
@@ -206,7 +210,10 @@ class EventLoopScheduler:
             try:
                 await func()
             finally:
+                self.loop.task.cancel()
+                await self.loop.task
                 self.scheduler.stream.close()
+                self.loop.stop()
         self.tick = tick
         return func
     def execute(self) -> Union[None, NoReturn]:
@@ -215,6 +222,8 @@ class EventLoopScheduler:
             try:
                 self.loop.run_until_complete(self.tick())
             finally:
+                if not self.is_called_stop:
+                    self.stop()
                 self.loop.close()
         self.tick_thread = greenlet(main)
         try:
@@ -234,6 +243,7 @@ class EventLoopScheduler:
             raise StopAsyncIteration
     def stop(self) -> None:
         self.is_stopping = True
+        self.is_called_stop = True
         self.player_thread.throw(PlayerStop)
     def __next__(self) -> None:
         """1ティック進める"""
@@ -248,13 +258,14 @@ class EventLoopScheduler:
         if self.tick_count in self.tick_callbacks:
             for callback in self.tick_callbacks[self.tick_count]:
                 self.loop.create_task(callback())
+            del self.tick_callbacks[self.tick_count]
         self.tick_count += 1
         if self.scheduler.tps != -1:
             self.last_time = time()
     def get_volume(self) -> float:
         volume = np.mean(np.abs(self.now_playing_audio.mean(axis=1)))
         return volume
-    def execute_to_tick(self, ticks: int) -> Callable[[Callable[[], Coroutine]], Callable[[], Coroutine]]:
+    def execute_to_tick(self, ticks: int) -> Callable[[Callable[[], Coroutine[Any, Any, Any]]], Callable[[], Coroutine[Any, Any, Any]]]:
         def Wrapper(func: Callable[[], Coroutine]):
             if ticks in self.tick_callbacks:
                 self.tick_callbacks[ticks + self.tick_count].append(func)
@@ -262,6 +273,20 @@ class EventLoopScheduler:
                 self.tick_callbacks[ticks + self.tick_count] = [func]
             return func
         return Wrapper
+    def execute_to_times(self, seconds: Optional[int] = None, minutes: Optional[int] = None, hours: Optional[int] = None) -> Callable[[Callable[[], Coroutine[Any, Any, Any]]], asyncio.Handle]:
+        if seconds is minutes is hours is None:
+            raise ValueError("To use this function, you must specify one of the time arguments.")
+        real_time = 0
+        if seconds:
+            real_time += seconds
+        if minutes:
+            real_time += minutes * 60
+        if hours:
+            real_time += hours * 3600
+        def Wrapper(func: Callable[[], Coroutine[Any, Any, Any]]) -> asyncio.Handle:
+            return self.loop.call_later(real_time, lambda: self.loop.create_task(func()))
+        return Wrapper
+
 
 class ExtensionBase:
     """拡張機能のベースクラス"""
@@ -306,7 +331,7 @@ class _SoundData:
         return len(self.get())
 
 class AudioEffecter(ExtensionBase):
-    """音声にエフェクトを書ける基本的な機能
+    """音声にエフェクトを掛ける基本的な機能
     拡張依存: SoundsManager"""
     def __init__(self, driver: Driver):
         super().__init__(driver)
