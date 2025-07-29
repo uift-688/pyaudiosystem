@@ -385,6 +385,16 @@ class AudioMap(ExtensionBase):
     def mix(self):
         return np.sum(list(self.data.values()), axis=0)
 
+class AudioPipeline(ExtensionBase):
+    def __init__(self, *pipelines: Callable[[np.ndarray], np.ndarray]):
+        super().__init__()
+        self.pipelines = pipelines
+    def execute(self, audio: Union[np.ndarray, str, _SoundData]):
+        data = audio.get() if isinstance(audio, _SoundData) else audio if isinstance(audio, np.ndarray) else self.driver.extensions["SoundsManager"].sounds[audio] if isinstance(audio, str) else None
+        for pipe in self.pipelines:
+            data = pipe(data)
+        return data
+
 class _SystemBuilder:
     def __init__(self, rate: Union[int, SupportsInt], auto_execute, format: AudioFormat = AudioFormat.int16):
         config = DriverConfig(format, rate, 400)
@@ -437,3 +447,9 @@ class AudioPipeline(ExtensionBase):
         for pipe in self.pipelines:
             data = pipe(data)
         return data
+
+is_test_mode = False
+
+def set_test_mode():
+    global is_test_mode
+    is_test_mode = True
