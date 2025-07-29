@@ -17,6 +17,8 @@ def test_audio_map():
 
     c = audio_map.mix()
 
+    driver.close()
+
     assert (c == a + b).all()
 
 def test_pipeline():
@@ -32,6 +34,8 @@ def test_pipeline():
     a, b = sin(audio1), cos(audio1)
 
     data = pipeline.execute(a)
+
+    driver.close()
 
     assert (data == (a + b)[::-1]).all()
 
@@ -49,6 +53,8 @@ def test_effecter():
     effecter.reverse("main", "main3")
     effecter.gain("main", 150, "main4")
 
+    driver.close()
+
     assert (sound["main2"].get() == sound["main"].get() * -1).all()
     assert (sound["main3"].get() == sound["main"].get()[::-1]).all()
     assert (sound["main4"].get() == sound["main"].get() * 1.5).all()
@@ -57,5 +63,7 @@ def test_extension_base():
     driver, loop, scheduler, sound = build_system(40000)
 
     ExtensionBase()
+
+    driver.close()
 
     assert "ExtensionBase" in driver.extensions
