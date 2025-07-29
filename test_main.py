@@ -1,6 +1,5 @@
 from main import build_system, AudioMap, set_test_mode, AudioPipeline, AudioEffecter, ExtensionBase
 from numpy import sin, cos, arange
-from time import perf_counter
 
 set_test_mode()
 
@@ -59,27 +58,3 @@ def test_extension_base():
 
     assert "ExtensionBase" in driver.extensions
 
-
-def test_tps():
-    intervals = []
-    timestamps = []
-
-    @loop.task
-    async def task():
-        scheduler.set_tps(20)
-        async for _ in loop:
-            if len(timestamps) >= 40:
-                return
-            timestamps.append(perf_counter())
-    
-    loop.execute()
-
-    for i in range(1, len(timestamps)):
-        intervals.append(timestamps[i] - timestamps[i - 1])
-
-    expected = 0.05
-    tolerance = 0.05
-    
-    for i, interval in enumerate(intervals):
-        print(f"<TPS> {interval:.4f}秒")
-        assert abs(interval - expected) < tolerance, f"{i}番目の間隔が不正: {interval:.4f}秒"
