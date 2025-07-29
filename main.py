@@ -310,7 +310,10 @@ class SoundsManager(ExtensionBase):
     def add(self, filename: str, sound_as: str, rate: Optional[int] = None):
         """音の追加
         例: `sound_manager.add("audio.wav", "audio")`"""
-        rate, data = read(filename)
+        if isinstance(filename, np.ndarray):
+            data = filename
+        else:
+            rate, data = read(filename)
         if data.ndim == 1:
             data = np.stack([data, data], axis=1)
         if self.driver.config.rate != rate:
