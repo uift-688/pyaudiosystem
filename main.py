@@ -249,10 +249,7 @@ class EventLoopScheduler:
             if self.last_time + 1 / self.scheduler.tps > perf_counter():
                 while self.last_time + 1 / self.scheduler.tps > perf_counter():
                     i += 1
-                    if i % 2 == 0:
-                        self.player_thread.switch()
-                    else:
-                        self.loop._run_once()
+                    self.player_thread.switch()
         self.tick_sync_condition.set()
         self.player_thread.switch()
         if self.tick_count in self.tick_callbacks:
