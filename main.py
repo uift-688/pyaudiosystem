@@ -336,7 +336,7 @@ class AudioEffecter(ExtensionBase):
     拡張依存: SoundsManager"""
     def __init__(self):
         super().__init__()
-        self.manager: SoundsManager = driver.extensions["SoundsManager"]
+        self.manager: SoundsManager = self.driver.extensions["SoundsManager"]
     def sum(self, *audios: Union[_SoundData, str], save_as: str):
         """音を合成する"""
         audios = tuple(audio if isinstance(audio, _SoundData) else _SoundData(self.driver.extensions["SoundsManager"], audio) for audio in audios)
@@ -362,12 +362,12 @@ class _AudioWriteHandlerForAudioMap:
     def cancel(self):
         del self.map.data[self.id]
 
-class AudioMap(ExtensionBase):
+class AudioMap:
     """システムマップに直接書きこまない仮想オーディオマップ
     size: サンプル数"""
     def __init__(self, size: int):
         super().__init__()
-        self.rate = self.driver.config.rate
+        self.rate = _AssistManager.drivers[__name__].config.rate
         self.size = slice(0, size)
         self.data: Dict[str, np.ndarray] = {}
     def write(self, audio: Union[np.ndarray, _SoundData, str], start: float, end: Optional[float] = None):
