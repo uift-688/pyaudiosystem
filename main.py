@@ -336,7 +336,7 @@ class AudioEffecter(ExtensionBase):
     拡張依存: SoundsManager"""
     def __init__(self):
         super().__init__()
-        self.manager: SoundsManager = _AssistManager[__name__].extensions["SoundsManager"]
+        self.manager: SoundsManager = _AssistManager.drivers[__name__].extensions["SoundsManager"]
     def sum(self, *audios: Union[_SoundData, str], save_as: str):
         """音を合成する"""
         audios = tuple(audio if isinstance(audio, _SoundData) else _SoundData(self.driver.extensions["SoundsManager"], audio) for audio in audios)
@@ -456,3 +456,25 @@ is_test_mode = False
 def set_test_mode():
     global is_test_mode
     is_test_mode = True
+
+# 4. ドライバ準備
+with build_system(44100, is_context=True, auto_execute=True) as (driver, loop, scheduler, sound):
+    sound.add("audio.wav", "main")
+
+    # 6. タスク定義（ループを何回進めるか決める）
+    @loop.task
+    async def task():
+        print("Go")
+        audio = await scheduler.play_soon("main")
+        scheduler.set_tps(20)
+        @loop.execute_to_tick(10)
+        async def func():
+            audio.cancel()
+            print("音声キャンセル！")
+            @loop.execute_to_tick(10)
+            async def func():
+                print("ループ終了")
+                loop.stop()
+        async for i in loop:
+            print(i)
+
