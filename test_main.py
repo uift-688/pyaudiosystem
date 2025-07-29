@@ -1,13 +1,12 @@
 from main import build_system, AudioMap, set_test_mode, AudioPipeline, AudioEffecter, ExtensionBase
 from numpy import sin, cos, arange
-from pytest import raises
 from time import perf_counter
 
 set_test_mode()
 
-def test_audio_map():
-    driver, loop, scheduler, sound = build_system(40000)
+driver, loop, scheduler, sound = build_system(40000)
 
+def test_audio_map():
     audio_map = AudioMap(driver, driver.config.rate * 4)
 
     audio1 = arange(0, driver.config.rate * 4)[:, None].repeat(2, axis=1)
@@ -21,11 +20,8 @@ def test_audio_map():
 
     assert (c == a + b).all()
 
-    driver.close()
 
 def test_pipeline():
-    driver, loop, scheduler, sound = build_system(40000)
-
     pipeline = AudioPipeline(driver, 
         lambda data: data + b,
         lambda data: data[::-1]
@@ -39,10 +35,8 @@ def test_pipeline():
 
     assert (data == (a + b)[::-1]).all()
 
-    driver.close()
 
 def test_effecter():
-    driver, loop, scheduler, sound = build_system(44100)
     effecter = AudioEffecter(driver)
 
     audio1 = arange(0, driver.config.rate * 4)[:, None].repeat(2, axis=1)
@@ -59,20 +53,14 @@ def test_effecter():
     assert (sound["main3"].get() == sound["main"].get()[::-1]).all()
     assert (sound["main4"].get() == sound["main"].get() * 1.5).all()
 
-    driver.close()
 
 def test_extension_base():
-    driver, loop, scheduler, sound = build_system(40000)
-
     ExtensionBase(driver)
 
     assert "ExtensionBase" in driver.extensions
 
-    driver.close()
 
 def test_tps():
-    driver, loop, scheduler, sound = build_system(40000)
-
     intervals = []
     timestamps = []
 
@@ -95,5 +83,3 @@ def test_tps():
     for i, interval in enumerate(intervals):
         print(f"<TPS> {interval:.4f}秒")
         assert abs(interval - expected) < tolerance, f"{i}番目の間隔が不正: {interval:.4f}秒"
-    
-    driver.close()
