@@ -6,7 +6,7 @@ set_test_mode()
 def test_audio_map():
     driver, loop, scheduler, sound = build_system(40000)
 
-    audio_map = AudioMap(driver, driver.config.rate * 4)
+    audio_map = AudioMap(driver.config.rate * 4)
 
     audio1 = arange(0, driver.config.rate * 4)[:, None].repeat(2, axis=1)
 
@@ -22,7 +22,7 @@ def test_audio_map():
 def test_pipeline():
     driver, loop, scheduler, sound = build_system(40000)
 
-    pipeline = AudioPipeline(driver, 
+    pipeline = AudioPipeline(
         lambda data: data + b,
         lambda data: data[::-1]
     )
@@ -37,7 +37,7 @@ def test_pipeline():
 
 def test_effecter():
     driver, loop, scheduler, sound = build_system(44100)
-    effecter = AudioEffecter(driver)
+    effecter = AudioEffecter()
 
     audio1 = arange(0, driver.config.rate * 4)[:, None].repeat(2, axis=1)
 
@@ -56,6 +56,6 @@ def test_effecter():
 def test_extension_base():
     driver, loop, scheduler, sound = build_system(40000)
 
-    ExtensionBase(driver)
+    ExtensionBase()
 
     assert "ExtensionBase" in driver.extensions
