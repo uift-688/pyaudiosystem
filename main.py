@@ -28,7 +28,7 @@ class Driver:
             raise RuntimeError(f"An audio driver must be assigned at most once per thread, but this thread has been assigned {len(_AssistManager.drivers) + 1} drivers: {__name__}")
         return super().__new__(cls)
     def __init__(self, config: DriverConfig) -> None:
-        self.audio = PyAudio()
+        self.audio = PyAudio() if not is_test_mode else None
         self.config = config
         self.extensions = {}
         self.manager = AudioStreamManager(self)
@@ -50,12 +50,13 @@ class AudioStreamManager:
     """音声ストリームを管理するクラス"""
     def __init__(self, driver: Driver):
         self.driver = driver
-        self.stream = driver.audio.open(self.driver.config.rate, 2, self.driver.config.format.value[0], output=True)
+        self.stream = driver.audio.open(self.driver.config.rate, 2, self.driver.config.format.value[0], output=True) if not is_test_mode else None
         self.audio_scheduler = AudioScheduler(self)
     def close(self):
-        self.stream.stop_stream()
-        self.stream.close()
-        self.driver.audio.terminate()
+        if not is_test_mode and self.stream is not None:
+            self.stream.stop_stream()
+            self.stream.close()
+            self.driver.audio.terminate()
 
 class AudioScheduler:
     """音声をスケジュールするクラス"""
@@ -196,6 +197,8 @@ class EventLoopScheduler:
         self.tasks = set()
     def _audioPlayer(self):
         while True:
+            if is_test_mode:
+                break
             array = self.scheduler.chunks[self.scheduler.chunkId % len(self.scheduler.chunks)]
             if len(array) != 0:
                 sum_data = np.sum([data.pop(0) for data in array.values() if len(data) > 0], axis=0, dtype=np.int64) / len(array)
