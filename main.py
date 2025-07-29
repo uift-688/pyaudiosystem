@@ -303,7 +303,11 @@ class SoundsManager(ExtensionBase):
     def __init__(self):
         super().__init__()
         self.sounds = {}
-    def add(self, filename: str, sound_as: str):
+    @overload
+    def add(self, filename: np.ndarray, sound_as: str, rate: int): ...
+    @overload
+    def add(self, filename: str, sound_as: str): ...
+    def add(self, filename: str, sound_as: str, rate: Optional[int] = None):
         """音の追加
         例: `sound_manager.add("audio.wav", "audio")`"""
         rate, data = read(filename)
