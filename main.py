@@ -120,11 +120,7 @@ class AudioScheduler:
             if id_key not in current_chunk:
                 current_chunk[id_key] = []
             current_chunk[id_key].extend(buffers)
-        if len(batch_buffers) == 50:
-            end = 49
-        else:
-            end = write_chunk_ids[-1] + 1
-        return AudioWriteHandler(self, range(write_chunk_ids[0], end), id)
+        return AudioWriteHandler(self, range(0, 50), id)
     async def play_later(self, seconds: float, data: Union[np.ndarray, "_SoundData", str]):
         """秒数経過後に再生する"""
         data = data if isinstance(data, _SoundData) else data if isinstance(data, np.ndarray) else _SoundData(self.stream.driver.extensions["SoundsManager"], data)
