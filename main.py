@@ -336,7 +336,7 @@ class AudioEffecter(ExtensionBase):
     拡張依存: SoundsManager"""
     def __init__(self):
         super().__init__()
-        self.manager: SoundsManager = self.driver.extensions["SoundsManager"]
+        self.manager: SoundsManager = _AssistManager[__name__].extensions["SoundsManager"]
     def sum(self, *audios: Union[_SoundData, str], save_as: str):
         """音を合成する"""
         audios = tuple(audio if isinstance(audio, _SoundData) else _SoundData(self.driver.extensions["SoundsManager"], audio) for audio in audios)
