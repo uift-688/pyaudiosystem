@@ -1,12 +1,14 @@
 from main import build_system, AudioMap, set_test_mode, AudioPipeline, AudioEffecter, ExtensionBase
-from numpy import linspace, sin, cos, int16, arange
+from numpy import sin, cos, arange
+from pytest import raises
+from time import perf_counter
 
 set_test_mode()
 
 def test_audio_map():
     driver, loop, scheduler, sound = build_system(40000)
 
-    audio_map = AudioMap(driver.config.rate * 4)
+    audio_map = AudioMap(driver, driver.config.rate * 4)
 
     audio1 = arange(0, driver.config.rate * 4)[:, None].repeat(2, axis=1)
 
@@ -17,14 +19,14 @@ def test_audio_map():
 
     c = audio_map.mix()
 
-    driver.close()
-
     assert (c == a + b).all()
+
+    driver.close()
 
 def test_pipeline():
     driver, loop, scheduler, sound = build_system(40000)
 
-    pipeline = AudioPipeline(
+    pipeline = AudioPipeline(driver, 
         lambda data: data + b,
         lambda data: data[::-1]
     )
@@ -35,13 +37,13 @@ def test_pipeline():
 
     data = pipeline.execute(a)
 
-    driver.close()
-
     assert (data == (a + b)[::-1]).all()
+
+    driver.close()
 
 def test_effecter():
     driver, loop, scheduler, sound = build_system(44100)
-    effecter = AudioEffecter()
+    effecter = AudioEffecter(driver)
 
     audio1 = arange(0, driver.config.rate * 4)[:, None].repeat(2, axis=1)
 
@@ -53,17 +55,45 @@ def test_effecter():
     effecter.reverse("main", "main3")
     effecter.gain("main", 150, "main4")
 
-    driver.close()
-
     assert (sound["main2"].get() == sound["main"].get() * -1).all()
     assert (sound["main3"].get() == sound["main"].get()[::-1]).all()
     assert (sound["main4"].get() == sound["main"].get() * 1.5).all()
 
+    driver.close()
+
 def test_extension_base():
     driver, loop, scheduler, sound = build_system(40000)
 
-    ExtensionBase()
+    ExtensionBase(driver)
+
+    assert "ExtensionBase" in driver.extensions
 
     driver.close()
 
-    assert "ExtensionBase" in driver.extensions
+def test_tps():
+    driver, loop, scheduler, sound = build_system(40000)
+
+    intervals = []
+    timestamps = []
+
+    @loop.task
+    async def task():
+        scheduler.set_tps(20)
+        async for _ in loop:
+            if len(timestamps) >= 40:
+                return
+            timestamps.append(perf_counter())
+    
+    loop.execute()
+
+    for i in range(1, len(timestamps)):
+        intervals.append(timestamps[i] - timestamps[i - 1])
+
+    expected = 0.05
+    tolerance = 0.05
+    
+    for i, interval in enumerate(intervals):
+        print(f"<TPS> {interval:.4f}秒")
+        assert abs(interval - expected) < tolerance, f"{i}番目の間隔が不正: {interval:.4f}秒"
+    
+    driver.close()
