@@ -591,38 +591,3 @@ is_test_mode = False
 def set_test_mode():
     global is_test_mode
     is_test_mode = True
-
-# 4. ドライバ準備
-with build_system(44100, is_context=True, auto_execute=True) as (driver, loop, scheduler, sound):
-    sound.add("audio.wav", "main")
-    effecter = AudioEffecter()
-
-    pipe = RealtimePipe()
-
-    # 6. タスク定義（ループを何回進めるか決める）
-    @loop.task
-    async def task():
-        print("Go")
-        audio = await scheduler.play_soon(pipe)
-        scheduler.set_tps(20)
-        @loop.execute_to_tick(10)
-        async def func():
-            await pipe.write("main")
-            @loop.execute_to_tick(1)
-            async def func():
-                print("再生！")
-                async for i in loop:
-                    if i > 11 + 5:
-                        break
-                    await pipe.write("main")
-                @loop.execute_to_tick(100)
-                async def func():
-                    audio.cancel()
-                    print("音声キャンセル！")
-                    @loop.execute_to_tick(200)
-                    async def func():
-                        print("ループ終了")
-                        loop.stop()
-        async for i in loop:
-            print(i)
-
