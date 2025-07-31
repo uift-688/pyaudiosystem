@@ -4,11 +4,13 @@ from enum import Enum
 from greenlet import greenlet
 from scipy.io.wavfile import read
 from scipy.signal import resample
-from typing import Callable, Optional, Self, List, Dict, Union, overload, Literal, Tuple, SupportsInt, Union, Coroutine, Any, Set
+from typing import Callable, Optional, Self, List, Dict, Union, overload, Literal, Tuple, SupportsInt, Union, Coroutine, Any, Set, TypeAlias
 from time import perf_counter
 from collections import defaultdict
 from uuid import uuid4
 import asyncio
+
+_audio_group: TypeAlias = Union[np.ndarray, str, "_SoundData"]
 
 class AudioFormat(Enum):
     """音声出力のフォーマットクラス"""
@@ -71,7 +73,7 @@ class AudioScheduler:
         self.tps = tps
     def close(self):
         self.chunks = []
-    async def _write(self, start_index: int, original_data: Union[np.ndarray, "_SoundData"], chunk_size: int = 100):
+    async def _write(self, start_index: int, original_data: Union[np.ndarray, "_SoundData"], chunk_size: int = 100, is_fast: bool = True, id: Optional[str] = None):
         """
         chunks     : チャンクのリスト（各要素はchunk_sizeのNumPy配列）
         start_index: 配列全体を連続と見なしたときの開始インデックス
@@ -100,7 +102,7 @@ class AudioScheduler:
         reshaped = data.reshape(-1, chunk_size, 2)
 
         # UUID とチャンクID の準備
-        id = uuid4().hex
+        id = id or uuid4().hex
         chunks = self.chunks
         write_positions = np.arange(num_chunks_needed) + (start_index // chunk_size)
         write_chunk_ids = (write_positions + self.chunkId + 1) % len(chunks)
@@ -113,31 +115,115 @@ class AudioScheduler:
         # まとめて chunks に登録
         current_chunk_id = None
         current_chunk: Optional[list] = None
-        for (chunk_id, id_key), buffers in batch_buffers.items():
+        for i, ((chunk_id, id_key), buffers) in enumerate(batch_buffers.items()):
             if chunk_id != current_chunk_id:
                 current_chunk = chunks[chunk_id]
                 current_chunk_id = chunk_id
             if id_key not in current_chunk:
                 current_chunk[id_key] = []
             current_chunk[id_key].extend(buffers)
-        return AudioWriteHandler(self, range(0, 50), id)
-    async def play_later(self, seconds: float, data: Union[np.ndarray, "_SoundData", str]):
+            if not is_fast:
+                if i + 1 % 4 == 0:
+                    await asyncio.sleep(self.driver.config.chunk / self.driver.config.rate * 4)
+        return AudioWriteHandler(self, range(0, 50), id, data)
+    @overload
+    async def play_later(self, seconds: float, data: _audio_group) -> "AudioWriteHandler": ...
+    @overload
+    async def play_later(self, seconds: float, data: "RealtimePipe") -> "PipeHandler": ...
+    async def play_later(self, seconds: float, data: Union[_audio_group, "RealtimePipe"]):
         """秒数経過後に再生する"""
+        if isinstance(data, RealtimePipe):
+            handler = PipeHandler(self, data)
+            self.loop.loop.call_later(seconds, handler._start)
+            return handler
         data = data if isinstance(data, _SoundData) else data if isinstance(data, np.ndarray) else _SoundData(self.stream.driver.extensions["SoundsManager"], data)
         return await self._write(round(seconds * self.stream.driver.config.rate), data, self.stream.driver.config.chunk)
-    async def play_soon(self, data: Union[np.ndarray, "_SoundData", str]):
+    @overload
+    async def play_soon(self, data: _audio_group) -> "AudioWriteHandler": ...
+    @overload
+    async def play_soon(self, data: "RealtimePipe") -> "PipeHandler": ...
+    async def play_soon(self, data: Union[_audio_group, "RealtimePipe"]):
         """1ティック後に再生"""
+        if isinstance(data, RealtimePipe):
+            handler = PipeHandler(self, data)
+            handler._start()
+            return handler
         data = data if isinstance(data, _SoundData) else data if isinstance(data, np.ndarray) else _SoundData(self.stream.driver.extensions["SoundsManager"], data)
         return await self._write(0, data, self.stream.driver.config.chunk)
 
 class AudioWriteHandler:
     """書き込んだ音声をキャンセルできる制御クラス"""
-    def __init__(self, scheduler: AudioScheduler, written: range, id: str):
+    def __init__(self, scheduler: AudioScheduler, written: range, id: str, data: np.ndarray):
         self.id, self.written, self.scheduler = id, written, scheduler
+        self.canceled = False
+        self.callback_function = None
+        self.play_waiter = self.scheduler.loop.loop.create_future()
+        self.callback_caller = self.scheduler.loop.loop.call_later(len(data) / self.scheduler.stream.driver.config.rate, self._callback_runner)
+    def _callback_runner(self):
+        if self.callback_function is not None:
+            self.scheduler.loop.loop.create_task(self.callback_function())
+        self.is_played = True
+        self.play_waiter.set_result(True)
+    def callback(self, func: Callable[[], Coroutine]):
+        self.callback_function = func
+        return func
+    def wait(self):
+        return self.play_waiter
     def cancel(self):
+        self.play_waiter.set_result(False)
         """書き込んだ音声をキャンセルする。"""
         for i in self.written:
             self.scheduler.chunks[i].pop(self.id, None)
+        self.canceled = True
+
+class PipeHandler:
+    def __init__(self, scheduler: AudioScheduler, pipe: "RealtimePipe"):
+        self.pipe = pipe
+        self.scheduler = scheduler
+        self._writer: Optional[asyncio.Task] = None
+        self._last_written_chunk: Optional[asyncio.Future] = None
+        self._id = uuid4().hex
+        self._tasks = set()
+        self.canceled = False
+        self._ids = set()
+    def _start(self):
+        self.pipe._handler = self
+        async def writer():
+            try:
+                while True:
+                    data = await self.pipe._pipe.get()
+                    max_len = len(data)
+                    datas = [data]
+                    if not self.pipe._pipe.empty():
+                        while not self.pipe._pipe.empty():
+                            data = await self.pipe._pipe.get()
+                            if max_len < len(data):
+                                max_len = len(data)
+                            datas.append(data)
+                    map = AudioMap(max_len)
+                    for data in datas:
+                        map.write(data, 0)
+                    id = uuid4().hex
+                    self._ids.add(id)
+                    task = asyncio.create_task(self.scheduler._write(0, map.mix(), self.scheduler.stream.driver.config.chunk, False, id))
+                    map.close()
+                    self.scheduler.loop.tasks.add(task)
+                    self._tasks.add(task)
+                    self._last_written_chunk = task
+            except asyncio.CancelledError:
+                pass
+        self._writer = task = asyncio.create_task(writer())
+        self.scheduler.loop.active_pipes[self._id] = task
+    def cancel(self):
+        self.canceled = True
+        async def _func():
+            tasks = asyncio.gather(*self._tasks)
+            tasks.cancel()
+            await tasks
+            for i in range(0, 50):
+                for id in self._ids:
+                    self.scheduler.chunks[i].pop(id, None)
+        return asyncio.create_task(_func())
 
 class AsyncConnectedEventLoop(asyncio.SelectorEventLoop):
     def __init__(self, driver: Driver) -> None:
@@ -154,7 +240,7 @@ class AsyncConnectedEventLoop(asyncio.SelectorEventLoop):
             try:
                 while True:
                     try:
-                        if len(self.driver.manager.audio_scheduler.chunks[self.driver.manager.audio_scheduler.chunkId]) == 0: # もしも今のチャンクに音声がないなら、スキップ + そのチャンク分スリープ
+                        if len(self.driver.manager.audio_scheduler.chunks[self.driver.manager.audio_scheduler.chunkId % 50]) == 0: # もしも今のチャンクに音声がないなら、スキップ + そのチャンク分スリープ
                             if self.driver.manager.audio_scheduler.loop.is_stopping:
                                 break # 今のチャンクに音声がなくても、終了フラグがたっているなら終了
                             self.driver.manager.audio_scheduler.chunkId += 1
@@ -169,7 +255,11 @@ class AsyncConnectedEventLoop(asyncio.SelectorEventLoop):
                 task.cancel()
                 await task
                 for task in self.driver.manager.audio_scheduler.loop.tasks:
-                    if not task.done:
+                    if not task.done():
+                        task.cancel()
+                        await task
+                for task in list(self.driver.manager.audio_scheduler.loop.active_pipes.values()):
+                    if not task.done():
                         task.cancel()
                         await task
                 self.stop()
@@ -191,6 +281,9 @@ class EventLoopScheduler:
         self.loop = AsyncConnectedEventLoop(self.scheduler.stream.driver)
         self.tick_callbacks: Dict[int, Set[Callable[[], Coroutine[Any, Any, Any]]]] = {}
         self.tasks = set()
+        self.active_pipes: Dict[str, asyncio.Task] = {}
+        self.chunk_play_queue = asyncio.Queue()
+        self.stopped = False
     def _audioPlayer(self):
         while True:
             if is_test_mode:
@@ -239,6 +332,9 @@ class EventLoopScheduler:
             raise StopAsyncIteration
         return self.tick_count
     def stop(self):
+        if self.stopped:
+            return
+        self.stopped = True
         self.is_stopping = True
     def __next__(self) -> None:
         """1ティック進める"""
@@ -252,17 +348,25 @@ class EventLoopScheduler:
                     self.player_thread.switch()
         self.tick_sync_condition.set()
         self.player_thread.switch()
-        if self.tick_count in self.tick_callbacks:
-            self.tasks.add(asyncio.gather(*self.tick_callbacks[self.tick_count]))
-            del self.tick_callbacks[self.tick_count]
+        for tick in list(self.tick_callbacks.keys()):
+            if tick <= self.tick_count:
+                for callback in self.tick_callbacks[tick]:
+                    self.tasks.add(self.loop.create_task(callback()))
+                del self.tick_callbacks[tick]
+            else:
+                break
         self.tick_count += 1
         if self.scheduler.tps != -1:
             self.last_time = perf_counter()
     def _tick_up(self):
         self.tick_sync_condition.set()
-        if self.tick_count in self.tick_callbacks:
-            self.tasks.add(asyncio.gather(*self.tick_callbacks[self.tick_count]))
-            del self.tick_callbacks[self.tick_count]
+        for tick in list(self.tick_callbacks.keys()):
+            if tick <= self.tick_count:
+                for callback in self.tick_callbacks[tick]:
+                    self.tasks.add(self.loop.create_task(callback()))
+                del self.tick_callbacks[tick]
+            else:
+                break
         self.tick_count += 1
         if self.scheduler.tps != -1:
             self.last_time = perf_counter()
@@ -272,10 +376,23 @@ class EventLoopScheduler:
     def execute_to_tick(self, ticks: int):
         def Wrapper(func: Callable[[], Coroutine[Any, Any, Any]]):
             if ticks + self.tick_count in self.tick_callbacks:
-                self.tick_callbacks[ticks + self.tick_count].add(func())
+                self.tick_callbacks[ticks + self.tick_count].add(func)
             else:
-                self.tick_callbacks[ticks + self.tick_count] = {func()}
+                self.tick_callbacks[ticks + self.tick_count] = {func}
             return func
+        return Wrapper
+    def execute_to_times(self, seconds: Optional[int] = None, minutes: Optional[int] = None, hours: Optional[int] = None) -> Callable[[Callable[[], Coroutine[Any, Any, Any]]], asyncio.Handle]:
+        if seconds is minutes is hours is None:
+            raise ValueError("To use this function, you must specify one of the time arguments.")
+        real_time = 0
+        if seconds:
+            real_time += seconds
+        if minutes:
+            real_time += minutes * 60
+        if hours:
+            real_time += hours * 3600
+        def Wrapper(func: Callable[[], Coroutine[Any, Any, Any]]) -> asyncio.Handle:
+            return self.loop.call_later(real_time, lambda: self.loop.create_task(func()))
         return Wrapper
 
 class _ExtensionBaseMeta(type):
@@ -370,7 +487,7 @@ class AudioMap:
         self.rate = _AssistManager.drivers[__name__].config.rate
         self.size = slice(0, size)
         self.data: Dict[str, np.ndarray] = {}
-    def write(self, audio: Union[np.ndarray, _SoundData, str], start: float, end: Optional[float] = None):
+    def write(self, audio: _audio_group, start: float, end: Optional[float] = None):
         """仮想オーディオマップに書き込む
         start/end: サンプル数"""
         end = end if end is not None else self.size.stop
@@ -387,12 +504,14 @@ class AudioMap:
         return _AudioWriteHandlerForAudioMap(self, id)
     def mix(self):
         return np.sum(list(self.data.values()), axis=0)
+    def close(self):
+        self.data = {}
 
 class AudioPipeline(ExtensionBase):
     def __init__(self, *pipelines: Callable[[np.ndarray], np.ndarray]):
         super().__init__()
         self.pipelines = pipelines
-    def execute(self, audio: Union[np.ndarray, str, _SoundData]):
+    def execute(self, audio: _audio_group):
         data = audio.get() if isinstance(audio, _SoundData) else audio if isinstance(audio, np.ndarray) else self.driver.extensions["SoundsManager"].sounds[audio] if isinstance(audio, str) else None
         for pipe in self.pipelines:
             data = pipe(data)
@@ -443,7 +562,7 @@ class AudioPipeline(ExtensionBase):
     def __init__(self, *pipelines: Callable[[np.ndarray], np.ndarray]):
         super().__init__()
         self.pipelines = pipelines
-    def execute(self, audio: Union[np.ndarray, str, _SoundData]):
+    def execute(self, audio: _audio_group):
         data = audio.get() if isinstance(audio, _SoundData) else audio if isinstance(audio, np.ndarray) else self.driver.extensions["SoundsManager"].sounds[audio] if isinstance(audio, str) else None
         if data is None:
             raise TypeError(f"Expected type _SoundData, ndarray, or str, but got {type(audio).__name__}")
@@ -451,8 +570,59 @@ class AudioPipeline(ExtensionBase):
             data = pipe(data)
         return data
 
+class RealtimePipe:
+    def __init__(self):
+        self._pipe = asyncio.Queue()
+        self.driver = _AssistManager.drivers[__name__]
+        self.closed = False
+        self._handler: Optional[PipeHandler] = None
+    async def write(self, data: _audio_group):
+        data = data.get() if isinstance(data, _SoundData) else data if isinstance(data, np.ndarray) else _SoundData(self.driver.extensions["SoundsManager"], data)
+        await self._pipe.put(data)
+    def close(self):
+        if self._handler is not None:
+            if not self._handler.canceled:
+                self._handler.cancel()
+        self._pipe.task_done()
+        self.closed = True
+
 is_test_mode = False
 
 def set_test_mode():
     global is_test_mode
     is_test_mode = True
+
+# 4. ドライバ準備
+with build_system(44100, is_context=True, auto_execute=True) as (driver, loop, scheduler, sound):
+    sound.add("audio.wav", "main")
+    effecter = AudioEffecter()
+
+    pipe = RealtimePipe()
+
+    # 6. タスク定義（ループを何回進めるか決める）
+    @loop.task
+    async def task():
+        print("Go")
+        audio = await scheduler.play_soon(pipe)
+        scheduler.set_tps(20)
+        @loop.execute_to_tick(10)
+        async def func():
+            await pipe.write("main")
+            @loop.execute_to_tick(1)
+            async def func():
+                print("再生！")
+                async for i in loop:
+                    if i > 11 + 5:
+                        break
+                    await pipe.write("main")
+                @loop.execute_to_tick(100)
+                async def func():
+                    audio.cancel()
+                    print("音声キャンセル！")
+                    @loop.execute_to_tick(200)
+                    async def func():
+                        print("ループ終了")
+                        loop.stop()
+        async for i in loop:
+            print(i)
+
